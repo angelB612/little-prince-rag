@@ -90,4 +90,14 @@ Key constants live at the top of each file:
 
 `llm.py` calls Gemini's hosted API, so it works on Streamlit Community Cloud (or anywhere else) as long as `GEMINI_API_KEY` is set — add it under Settings → Secrets on Streamlit Cloud (`GEMINI_API_KEY = "..."`), which Streamlit also exposes as an environment variable.
 
-Since `chroma_db/` and `data/` aren't committed (copyrighted content), a deployment with neither present will show a file uploader instead of the chat input on first load — visitors supply their own copy of the book (and, optionally, reference material), and `app.py` builds an in-memory index for that session via `ingest.build_session_collection()`. Nothing uploaded is written to disk. If you'd rather skip the upload step, commit a prebuilt `chroma_db/` for your own book/reference files instead — `app.py` uses it automatically when present, just like it does locally.
+Since `chroma_db/` and `data/` aren't committed (copyrighted content), `app.py` resolves the index in this order:
+
+1. **Local prebuilt index** — if `chroma_db/` exists (e.g. you ran `ingest.py`), it's used directly, same as running locally.
+2. **Private remote fetch** — if `DATA_GITHUB_TOKEN` and `DATA_GITHUB_REPO` are set (see below), `app.py` downloads the book/reference files from a private repo and builds the index once per container, via `fetch_and_build_remote_index()`. Every visitor gets the chat straight away; nothing copyrighted ever touches this public repo.
+3. **Per-visitor upload** — if neither applies, each visitor is shown a file uploader and the index is built in-memory for just their session, via `ingest.build_session_collection()`. Nothing uploaded is written to disk.
+
+To set up option 2 for your own deployment:
+
+1. Create a **separate, private** GitHub repo (e.g. `little-prince-rag-data`) containing just a `data/` folder with your book/reference files.
+2. Generate a [fine-grained GitHub token](https://github.com/settings/personal-access-tokens) scoped only to that repo, with read-only "Contents" permission.
+3. On Streamlit Cloud, add two secrets: `DATA_GITHUB_TOKEN = "..."` and `DATA_GITHUB_REPO = "yourname/little-prince-rag-data"`.

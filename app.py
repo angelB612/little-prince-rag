@@ -13,7 +13,10 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 import re
+import tempfile
+from pathlib import Path
 
+import requests
 import streamlit as st
 from sentence_transformers import SentenceTransformer
 import chromadb
@@ -53,6 +56,39 @@ def correct_query(query: str) -> str:
 def get_collection():
     client = chromadb.PersistentClient(path="./chroma_db")
     return client.get_collection(COLLECTION_NAME)
+
+# Read a secret whether or not a secrets.toml exists at all (st.secrets
+# raises outright if there's no secrets file, even for .get()).
+def _get_secret(key: str) -> str | None:
+    try:
+        return st.secrets.get(key)
+    except Exception:
+        return os.environ.get(key)
+
+# Download book/reference files from a private GitHub repo (configured via
+# secrets) and build the index once per container, so visitors never upload.
+@st.cache_resource(show_spinner=False)
+def fetch_and_build_remote_index():
+    token = _get_secret("DATA_GITHUB_TOKEN")
+    repo = _get_secret("DATA_GITHUB_REPO")
+    if not token or not repo:
+        return None
+
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    listing = requests.get(
+        f"https://api.github.com/repos/{repo}/contents/data", headers=headers, timeout=30
+    )
+    listing.raise_for_status()
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    for entry in listing.json():
+        if entry["type"] == "file":
+            content = requests.get(entry["download_url"], headers=headers, timeout=30)
+            content.raise_for_status()
+            (tmp_dir / entry["name"]).write_bytes(content.content)
+
+    ingest.build_index(tmp_dir)
+    return get_collection()
 
 st.set_page_config(page_title="The Little Prince RAG", page_icon="⚘", layout="wide")
 
@@ -242,13 +278,14 @@ for msg in st.session_state.messages:
 with st.spinner("Preparing your reading companion..."):
     load_embed_model()
 
-# Reuse the prebuilt local index if there is one; otherwise (e.g. deployed
-# with no data/chroma_db committed) let the user upload their own copy.
+# Reuse the prebuilt local index if there is one; otherwise try a private
+# remote source (see fetch_and_build_remote_index); otherwise let the
+# visitor upload their own copy.
 if "collection" not in st.session_state:
     try:
         st.session_state.collection = get_collection()
     except Exception:
-        st.session_state.collection = None
+        st.session_state.collection = fetch_and_build_remote_index()
 
 if st.session_state.collection is None:
     st.info("No book index found. Upload your own copy of the book to get started.")
